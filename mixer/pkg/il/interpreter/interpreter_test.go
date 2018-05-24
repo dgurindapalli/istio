@@ -15,9 +15,9 @@
 package interpreter
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -55,7 +55,7 @@ func TestInterpreter_EvalFnID(t *testing.T) {
 
 	i := New(p, map[string]Extern{})
 	fnID := p.Functions.IDOf("main")
-	r, e := i.EvalFnID(fnID, &ilt.FakeBag{})
+	r, e := i.EvalFnID(fnID, ilt.NewFakeBag(nil))
 
 	if e != nil {
 		t.Fatal(e)
@@ -74,27 +74,13 @@ func TestInterpreter_Eval_FunctionNotFound(t *testing.T) {
 	`)
 
 	i := New(p, map[string]Extern{})
-	_, e := i.Eval("foo", &ilt.FakeBag{})
+	_, e := i.Eval("foo", ilt.NewFakeBag(nil))
 	if e == nil {
 		t.Fatal("expected error during Eval()")
 	}
 
 	if e.Error() != "function not found: 'foo'" {
 		t.Fatalf("unexpected error: '%v'", e)
-	}
-}
-
-func TestInterpreter_StringTableSize(t *testing.T) {
-	p, _ := text.ReadText(`
-	fn main() bool
-		apush_b false
-		ret
-	end
-	`)
-
-	i := New(p, map[string]Extern{})
-	if i.StringTableSize() != p.Strings().Size() {
-		t.Fatalf("Size mismatch: %d != %d", i.StringTableSize(), p.Strings().Size())
 	}
 }
 
@@ -1686,7 +1672,21 @@ func TestInterpreter_Eval(t *testing.T) {
 				}),
 			},
 		},
-
+		"extern/ret/string/instringmaprefcounted": {
+			code: `
+		fn main() string
+			call ext
+			alookup "b"
+			ret
+		end
+		`,
+			expected: "c",
+			externs: map[string]Extern{
+				"ext": ExternFromFn("ext", func() il.StringMap {
+					return ilt.NewStringMap("", map[string]string{"b": "c"}, nil)
+				}),
+			},
+		},
 		"extern/ret/ipaddress": {
 			code: `
 		fn main() interface
@@ -1694,7 +1694,7 @@ func TestInterpreter_Eval(t *testing.T) {
 			ret
 		end
 		`,
-			expected: []byte{0x1, 0x2, 0x4, 0x6},
+			expected: net.ParseIP("1.2.4.6"),
 			externs: map[string]Extern{
 				"ext": ExternFromFn("ext", func() []byte {
 					return []byte{0x1, 0x2, 0x4, 0x6}
@@ -1837,8 +1837,9 @@ func TestInterpreter_Eval(t *testing.T) {
 				},
 			},
 			externs: map[string]Extern{
-				"ext": ExternFromFn("ext", func(r map[string]string) string {
-					return r["b"]
+				"ext": ExternFromFn("ext", func(r il.StringMap) string {
+					v, _ := r.Get("b")
+					return v
 				}),
 			},
 		},
@@ -1850,7 +1851,7 @@ func TestInterpreter_Eval(t *testing.T) {
 			ret
 		end
 		`,
-			expected: []byte{0x1, 0x2, 0x4, 0x6},
+			expected: net.ParseIP("1.2.4.6"),
 			input: map[string]interface{}{
 				"a": []byte{0x1, 0x2, 0x4, 0x6},
 			},
@@ -2059,8 +2060,9 @@ end`,
 		}
 
 		test.code = code
+		name := n
 		t.Run(n, func(tt *testing.T) {
-			runTestCode(tt, test)
+			runTestCode(name, tt, test)
 		})
 	}
 }
@@ -2225,8 +2227,9 @@ end
 	for n, test := range tests {
 		test.code = fmt.Sprintf(template, test.code)
 		test.err = "stack underflow"
+		name := n
 		t.Run(n, func(tt *testing.T) {
-			runTestCode(tt, test)
+			runTestCode(name, tt, test)
 		})
 	}
 }
@@ -2247,7 +2250,7 @@ fn main() %s
 end`, ty),
 		}
 
-		t.Run("StackUnderflow_Ret_"+ty, func(tt *testing.T) { runTestCode(tt, tst) })
+		t.Run("StackUnderflow_Ret_"+ty, func(tt *testing.T) { runTestCode("StackUnderflow_Ret_"+ty, tt, tst) })
 	}
 }
 
@@ -2339,9 +2342,9 @@ end
 	for n, test := range tests {
 		test.err = "stack overflow"
 		test.code = fmt.Sprintf(template, test.code)
-
+		name := n
 		t.Run(n, func(tt *testing.T) {
-			runTestCode(tt, test)
+			runTestCode(name, tt, test)
 		})
 	}
 }
@@ -2378,13 +2381,14 @@ end
 				"b": "c",
 			},
 		}
+		name := n
 		t.Run(n, func(tt *testing.T) {
-			runTestCode(tt, test)
+			runTestCode(name, tt, test)
 		})
 	}
 }
 
-func runTestCode(t *testing.T, test test) {
+func runTestCode(name string, t *testing.T, test test) {
 	p := il.NewProgram()
 	err := text.MergeText(test.code, p)
 	if err != nil {
@@ -2396,12 +2400,11 @@ func runTestCode(t *testing.T, test test) {
 func runTestProgram(t *testing.T, p *il.Program, test test) {
 	s := NewStepper(p, test.externs)
 
-	bag := &ilt.FakeBag{Attrs: test.input}
+	bag := ilt.NewFakeBag(test.input)
 	for err := s.Begin("main", bag); !s.Done(); s.Step() {
 		if err != nil {
 			t.Fatal(s.Error())
 		}
-		t.Log(s)
 	}
 	if s.Error() != nil {
 		if len(test.err) == 0 {
@@ -2447,13 +2450,13 @@ func runTestProgram(t *testing.T, p *il.Program, test test) {
 }
 
 func areEqual(a1 interface{}, a2 interface{}) bool {
-	b1, b1Ok := a1.([]byte)
-	b2, b2Ok := a2.([]byte)
+	b1, b1Ok := a1.(net.IP)
+	b2, b2Ok := a2.(net.IP)
 	if b1Ok != b2Ok {
 		return false
 	}
 	if b1Ok {
-		return bytes.Equal(b1, b2)
+		return b1.Equal(b2)
 	}
 	return a1 == a2
 }

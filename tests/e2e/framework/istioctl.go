@@ -21,33 +21,34 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
-	"runtime"
 
-	"github.com/golang/glog"
-
+	"istio.io/istio/pkg/log"
 	"istio.io/istio/tests/util"
 )
 
 const (
-	istioctlURL = "ISTIOCTL_URL"
-	// We use proxy always from pilot, at lease for now, so proxy and pilot always share the same hub and tag
-	proxyHubConst = "PILOT_HUB"
-	proxyTagConst = "PILOT_TAG"
+	istioctlURL   = "ISTIOCTL_URL"
+	proxyHubConst = "HUB"
+	proxyTagConst = "TAG"
 )
 
 var (
-	remotePath = flag.String("istioctl_url", os.Getenv(istioctlURL), "URL to download istioctl")
-	localPath  = flag.String("istioctl", "", "Use local istioctl instead of remote")
+	defaultProxy = flag.Bool("default_proxy", false, "Test with default proxy hub and tag")
+	remotePath   = flag.String("istioctl_url", os.Getenv(istioctlURL), "URL to download istioctl")
+	localPath    = flag.String("istioctl", "", "Use local istioctl instead of remote")
 )
 
 // Istioctl gathers istioctl information.
 type Istioctl struct {
+	localPath  string
 	remotePath string
 	binaryPath string
 	namespace  string
 	proxyHub   string
 	proxyTag   string
 	yamlDir    string
+	// If true, will ignore proxyHub and proxyTag but use the default one.
+	defaultProxy bool
 }
 
 // NewIstioctl create a new istioctl by given temp dir.
@@ -65,20 +66,22 @@ func NewIstioctl(yamlDir, namespace, istioNamespace, proxyHub, proxyTag string) 
 	}
 
 	return &Istioctl{
-		remotePath: *remotePath,
-		binaryPath: filepath.Join(tmpDir, "istioctl"),
-		namespace:  namespace,
-		proxyHub:   proxyHub,
-		proxyTag:   proxyTag,
-		yamlDir:    filepath.Join(yamlDir, "istioctl"),
+		localPath:    *localPath,
+		remotePath:   *remotePath,
+		binaryPath:   filepath.Join(tmpDir, "istioctl"),
+		namespace:    namespace,
+		proxyHub:     proxyHub,
+		proxyTag:     proxyTag,
+		yamlDir:      filepath.Join(yamlDir, "istioctl"),
+		defaultProxy: *defaultProxy,
 	}, nil
 }
 
 // Setup set up istioctl prerequest for tests, port forwarding
 func (i *Istioctl) Setup() error {
-	glog.Info("Setting up istioctl")
+	log.Info("Setting up istioctl")
 	if err := i.Install(); err != nil {
-		glog.Error("Failed to download istioctl")
+		log.Error("Failed to download istioctl")
 		return err
 	}
 	return nil
@@ -86,42 +89,43 @@ func (i *Istioctl) Setup() error {
 
 // Teardown clean up everything created by setup
 func (i *Istioctl) Teardown() error {
-	glog.Info("Cleaning up istioctl")
+	log.Info("Cleaning up istioctl")
 	return nil
 }
 
 // Install downloads Istioctl binary.
 func (i *Istioctl) Install() error {
-	if *localPath == "" {
+	if i.localPath == "" {
+		if i.remotePath == "" {
+			// If a remote URL or env variable is not set, default to the locally built istioctl
+			gopath := os.Getenv("GOPATH")
+			i.localPath = filepath.Join(gopath, "/bin/istioctl")
+			i.binaryPath = i.localPath
+			return nil
+		}
 		var usr, err = user.Current()
 		if err != nil {
-			glog.Error("Failed to get current user")
+			log.Error("Failed to get current user")
 			return err
 		}
 		homeDir := usr.HomeDir
 
-		var istioctlSuffix string
-		switch runtime.GOOS {
-		case "linux":
-			istioctlSuffix = "linux"
-		case "darwin":
-			istioctlSuffix = "osx"
-		default:
-			return fmt.Errorf("unsupported operating system: %s", runtime.GOOS)
+		istioctlSuffix, err := util.GetOsExt()
+		if err != nil {
+			return err
 		}
-
 		if err = util.HTTPDownload(i.binaryPath, i.remotePath+"/istioctl-"+istioctlSuffix); err != nil {
-			glog.Error("Failed to download istioctl")
+			log.Error("Failed to download istioctl")
 			return err
 		}
 		err = os.Chmod(i.binaryPath, 0755) // #nosec
 		if err != nil {
-			glog.Error("Failed to add execute permission to istioctl")
+			log.Error("Failed to add execute permission to istioctl")
 			return err
 		}
 		i.binaryPath = fmt.Sprintf("%s -c %s/.kube/config", i.binaryPath, homeDir)
 	} else {
-		i.binaryPath = *localPath
+		i.binaryPath = i.localPath
 	}
 	return nil
 }
@@ -129,7 +133,7 @@ func (i *Istioctl) Install() error {
 func (i *Istioctl) run(format string, args ...interface{}) error {
 	format = i.binaryPath + " " + format
 	if _, err := util.Shell(format, args...); err != nil {
-		glog.Errorf("istioctl %s failed", args)
+		log.Errorf("istioctl %s failed", args)
 		return err
 	}
 	return nil
@@ -137,7 +141,11 @@ func (i *Istioctl) run(format string, args ...interface{}) error {
 
 // KubeInject use istio kube-inject to create new yaml with a proxy as sidecar.
 func (i *Istioctl) KubeInject(src, dest string) error {
-	return i.run("kube-inject -f %s -o %s --hub %s --tag %s -n %s -i %s",
+	if i.defaultProxy {
+		return i.run(`kube-inject -f %s -o %s -n %s -i %s --meshConfigMapName=istio`,
+			src, dest, i.namespace, i.namespace)
+	}
+	return i.run(`kube-inject -f %s -o %s --hub %s --tag %s -n %s -i %s --meshConfigMapName=istio`,
 		src, dest, i.proxyHub, i.proxyTag, i.namespace, i.namespace)
 }
 

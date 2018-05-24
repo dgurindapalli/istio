@@ -14,12 +14,11 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-WD=$(dirname $0)
-WD=$(cd $WD; pwd)
-ROOT=$(dirname $WD)
 
 #######################################
-# Presubmit script triggered by Prow. #
+#                                     #
+#        pilot-e2e (v1alpha1)         #
+#                                     #
 #######################################
 
 # Exit immediately for non zero status
@@ -29,26 +28,10 @@ set -u
 # Print commands
 set -x
 
-if [ "${CI:-}" == 'bootstrap' ]; then
-  # Test harness will checkout code to directory $GOPATH/src/github.com/istio/istio
-  # but we depend on being at path $GOPATH/src/istio.io/istio for imports
-  ln -sf ${GOPATH}/src/github.com/istio ${GOPATH}/src/istio.io
-  ROOT=${GOPATH}/src/istio.io/istio
-  cd ${GOPATH}/src/istio.io/istio
+# Run tests with auth disabled
+echo 'Running pilot e2e tests (v1alpha1, noauth)'
+./prow/e2e-suite.sh --auth_enable=false --v1alpha3=false --single_test e2e_pilot "$@"
 
-  # Use the provided pull head sha, from prow.
-  GIT_SHA="${PULL_PULL_SHA}"
-
-else
-  # Use the current commit.
-  GIT_SHA="$(git rev-parse --verify HEAD)"
-fi
-
-source "${ROOT}/prow/cluster_lib.sh"
-
-trap delete_cluster EXIT
-create_cluster 'e2e-pilot'
-
-ln -sf "${HOME}/.kube/config" ${ROOT}/pilot/platform/kube/config
-HUB="gcr.io/istio-testing"
-make -C "${ROOT}/pilot" e2etest HUB="${HUB}" TAG="${GIT_SHA}" TESTOPTS="-mixer=false"
+# Run tests with auth enabled
+echo 'Running pilot e2e tests (v1alpha1, auth)'
+./prow/e2e-suite.sh --auth_enable=true --v1alpha3=false --single_test e2e_pilot "$@"

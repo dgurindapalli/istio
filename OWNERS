@@ -1,26 +1,12 @@
-reviewers:
-  - geeknoid
-  - andraxylia
-  - costinm
-  - Douglas-reid
-  - ldemailly
-  - rshriram
-  - sebastienvas
-  - mandarjog
-  - frankbu
-  - linsun
-  - kyessenov
-  - hklai
 approvers:
-  - geeknoid
-  - andraxylia
   - costinm
-  - Douglas-reid
   - ldemailly
-  - rshriram
-  - mandarjog
-  - frankbu
-  - linsun
-  - kyessenov
+  - douglas-reid
+  - geeknoid
   - hklai
-
+  - linsun
+  - mandarjog
+  - myidpt
+  - rshriram
+  - wattli
+  - ZackButcher

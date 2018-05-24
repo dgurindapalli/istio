@@ -12,6 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//go:generate $GOPATH/src/istio.io/istio/bin/mixer_codegen.sh -f mixer/adapter/list/config/config.proto
+
+// Package list provides an adapter that implements the listEntry
+// template to enable blacklist / whitelist checking of values.
 package list // import "istio.io/istio/mixer/adapter/list"
 
 import (
@@ -23,14 +27,16 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 
-	rpc "github.com/googleapis/googleapis/google/rpc"
+	rpc "github.com/gogo/googleapis/google/rpc"
 
 	"istio.io/istio/mixer/adapter/list/config"
 	"istio.io/istio/mixer/pkg/adapter"
+	"istio.io/istio/mixer/pkg/status"
 	"istio.io/istio/mixer/template/listentry"
 )
 
@@ -90,7 +96,7 @@ func (h *handler) HandleListEntry(_ context.Context, entry *listentry.Instance) 
 	}
 
 	return adapter.CheckResult{
-		Status:        rpc.Status{Code: int32(code), Message: msg},
+		Status:        status.WithMessage(code, msg),
 		ValidDuration: h.config.CachingInterval,
 		ValidUseCount: h.config.CachingUseCount,
 	}, nil
@@ -190,6 +196,15 @@ func (h *handler) fetchList() {
 			h.lock.Unlock()
 			return
 		}
+	case config.REGEX:
+		l, err = parseRegexList(buf, h.config.Overrides)
+		if err != nil {
+			err = h.log.Errorf("Could not parse data from %s: %v", h.config.ProviderUrl, err)
+			h.lock.Lock()
+			h.lastFetchError = err
+			h.lock.Unlock()
+			return
+		}
 	}
 
 	// install the new list
@@ -228,6 +243,14 @@ func (h *handler) purgeList() {
 	h.lock.Lock()
 	h.list = nil
 	h.lock.Unlock()
+}
+
+func (h *handler) hasData() bool {
+	h.lock.Lock()
+	result := h.list != nil
+	h.lock.Unlock()
+
+	return result
 }
 
 ///////////////// Bootstrap ///////////////
@@ -296,7 +319,15 @@ func (b *builder) Validate() (ce *adapter.ConfigErrors) {
 
 			_, _, err := net.ParseCIDR(ip)
 			if err != nil {
-				ce = ce.Appendf("overrides", "could not parse override %s: %v", orig, err)
+				ce = ce.Appendf("overrides", "could not parse ip address override %s: %v", orig, err)
+			}
+		}
+	}
+
+	if ac.EntryType == config.REGEX {
+		for _, regex := range ac.Overrides {
+			if _, err := regexp.Compile(regex); err != nil {
+				ce = ce.Appendf("overrides", "could not parse regex override %s: %v", regex, err)
 			}
 		}
 	}

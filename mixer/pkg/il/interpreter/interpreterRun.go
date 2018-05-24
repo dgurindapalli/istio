@@ -29,7 +29,7 @@ func (in *Interpreter) run(fn *il.Function, bag attribute.Bag, step bool) (Resul
 	var hp uint32
 
 	strings := in.program.Strings()
-	body := in.code
+	body := in.program.ByteCode()
 
 	var code uint32
 	var t1 uint32
@@ -40,6 +40,7 @@ func (in *Interpreter) run(fn *il.Function, bag attribute.Bag, step bool) (Resul
 	var tf64 float64
 	var tVal interface{}
 	var tStr string
+	var tStr2 string
 	var tDur time.Duration
 	var tBool bool
 	var tFound bool
@@ -164,7 +165,18 @@ func (in *Interpreter) run(fn *il.Function, bag attribute.Bag, step bool) (Resul
 			registers[t1+1] = opstack[sp-2]
 			sp = sp - 2
 
-		case il.ALoadS, il.ALoadB:
+		case il.ALoadS:
+			t1 = body[ip]
+			ip++
+			if hp == heapSize-1 {
+				goto HEAP_OVERFLOW
+			}
+			t2 = hp
+			heap[hp] = strings.GetString(t1)
+			hp++
+			registers[t1] = t2
+
+		case il.ALoadB:
 			t1 = body[ip]
 			ip++
 			registers[t1] = body[ip]
@@ -196,7 +208,22 @@ func (in *Interpreter) run(fn *il.Function, bag attribute.Bag, step bool) (Resul
 			opstack[sp+1] = registers[t1]
 			sp = sp + 2
 
-		case il.APushS, il.APushB:
+		case il.APushS:
+			t1 = body[ip]
+			ip++
+			if sp > opStackSize-1 {
+				goto STACK_OVERFLOW
+			}
+			if hp == heapSize-1 {
+				goto HEAP_OVERFLOW
+			}
+			t2 = hp
+			heap[hp] = strings.GetString(t1)
+			hp++
+			opstack[sp] = t2
+			sp++
+
+		case il.APushB:
 			t1 = body[ip]
 			ip++
 			if sp > opStackSize-1 {
@@ -216,7 +243,31 @@ func (in *Interpreter) run(fn *il.Function, bag attribute.Bag, step bool) (Resul
 			opstack[sp+1] = t1
 			sp = sp + 2
 
-		case il.EqS, il.EqB:
+		case il.EqS:
+			if sp < 2 {
+				goto STACK_UNDERFLOW
+			}
+			t1 = opstack[sp-1]
+			t2 = opstack[sp-2]
+			sp = sp - 2
+			if t1 >= hp {
+				goto INVALID_HEAP_ACCESS
+			}
+			tStr = heap[t1].(string)
+			if t2 >= hp {
+				goto INVALID_HEAP_ACCESS
+			}
+			tStr2 = heap[t2].(string)
+
+			if tStr == tStr2 {
+				opstack[sp] = 1
+				sp++
+			} else {
+				opstack[sp] = 0
+				sp++
+			}
+
+		case il.EqB:
 			if sp < 2 {
 				goto STACK_UNDERFLOW
 			}
@@ -245,7 +296,27 @@ func (in *Interpreter) run(fn *il.Function, bag attribute.Bag, step bool) (Resul
 				sp++
 			}
 
-		case il.AEqS, il.AEqB:
+		case il.AEqS:
+			t1 = body[ip]
+			ip++
+			if sp < 1 {
+				goto STACK_UNDERFLOW
+			}
+			sp--
+			t2 = opstack[sp]
+			if t2 >= hp {
+				goto INVALID_HEAP_ACCESS
+			}
+			tStr = heap[t2].(string)
+			if strings.GetString(t1) == tStr {
+				opstack[sp] = 1
+				sp++
+			} else {
+				opstack[sp] = 0
+				sp++
+			}
+
+		case il.AEqB:
 			t1 = body[ip]
 			ip++
 			if sp < 1 {
@@ -398,7 +469,13 @@ func (in *Interpreter) run(fn *il.Function, bag attribute.Bag, step bool) (Resul
 				tErr = fmt.Errorf("error converting value to string: '%v'", tVal)
 				goto RETURN_ERR
 			}
-			opstack[sp] = strings.GetID(tStr)
+			if hp == heapSize-1 {
+				goto HEAP_OVERFLOW
+			}
+			t2 = hp
+			heap[hp] = tStr
+			hp++
+			opstack[sp] = t2
 			sp++
 
 		case il.ResolveB:
@@ -512,7 +589,13 @@ func (in *Interpreter) run(fn *il.Function, bag attribute.Bag, step bool) (Resul
 					tErr = fmt.Errorf("error converting value to string: '%v'", tVal)
 					goto RETURN_ERR
 				}
-				opstack[sp] = strings.GetID(tStr)
+				if hp == heapSize-1 {
+					goto HEAP_OVERFLOW
+				}
+				t2 = hp
+				heap[hp] = tStr
+				hp++
+				opstack[sp] = t2
 				sp++
 				opstack[sp] = 1
 				sp++
@@ -794,17 +877,17 @@ func (in *Interpreter) run(fn *il.Function, bag attribute.Bag, step bool) (Resul
 			ip++
 			frames[fp].save(&registers, sp-typesStackAllocSize(fn.Parameters), ip, fn)
 			fp++
-			fn := in.program.Functions.GetByID(t1)
+			fn2 := in.program.Functions.GetByID(t1)
 
-			if fn == nil {
+			if fn2 == nil {
 				tErr = fmt.Errorf("function not found: '%s'", strings.GetString(t1))
 				goto RETURN_ERR
 			}
-			if fn.Address == 0 {
+			if fn2.Address == 0 {
 				fp--
 
 				ext := in.externs[strings.GetString(t1)]
-				t2 = typesStackAllocSize(fn.Parameters)
+				t2 = typesStackAllocSize(fn2.Parameters)
 				if sp < t2 {
 					goto STACK_UNDERFLOW
 				}
@@ -815,11 +898,11 @@ func (in *Interpreter) run(fn *il.Function, bag attribute.Bag, step bool) (Resul
 
 				opstack[sp-t2] = t1
 				opstack[sp-t2+1] = t3
-				sp -= t2 - typeStackAllocSize(fn.ReturnType)
+				sp -= t2 - typeStackAllocSize(fn2.ReturnType)
 				break
 			}
 
-			ip = fn.Address
+			ip = fn2.Address
 
 		case il.Ret:
 			if fp == 0 {
@@ -855,7 +938,10 @@ func (in *Interpreter) run(fn *il.Function, bag attribute.Bag, step bool) (Resul
 						goto STACK_UNDERFLOW
 					}
 					r.v1 = opstack[sp-1]
-					r.vs = strings.GetString(r.v1)
+					if r.v1 >= hp {
+						goto INVALID_HEAP_ACCESS
+					}
+					r.vs = heap[r.v1].(string)
 
 				case il.Interface:
 					if sp < 1 {
@@ -899,14 +985,22 @@ func (in *Interpreter) run(fn *il.Function, bag attribute.Bag, step bool) (Resul
 			t1 = opstack[sp-1]
 			t2 = opstack[sp-2]
 			sp = sp - 2
-			tStr = strings.GetString(t1)
+			if t1 >= hp {
+				goto INVALID_HEAP_ACCESS
+			}
+			tStr = heap[t1].(string)
 			if t2 >= hp {
 				goto INVALID_HEAP_ACCESS
 			}
 			tVal = heap[t2]
-			tStr, tFound = tVal.(map[string]string)[tStr]
+			tStr, tFound = il.MapGet(tVal, tStr)
 			if tFound {
-				t3 = strings.GetID(tStr)
+				if hp == heapSize-1 {
+					goto HEAP_OVERFLOW
+				}
+				t3 = hp
+				heap[hp] = tStr
+				hp++
 				opstack[sp] = t3
 				opstack[sp+1] = 1
 				sp = sp + 2
@@ -922,17 +1016,29 @@ func (in *Interpreter) run(fn *il.Function, bag attribute.Bag, step bool) (Resul
 			t1 = opstack[sp-1]
 			t2 = opstack[sp-2]
 			sp = sp - 2
-			tStr = strings.GetString(t1)
+			if t1 >= hp {
+				goto INVALID_HEAP_ACCESS
+			}
+			tStr = heap[t1].(string)
 			if t2 >= hp {
 				goto INVALID_HEAP_ACCESS
 			}
 			tVal = heap[t2]
-			tStr, tFound = tVal.(map[string]string)[tStr]
+			tStr, tFound = il.MapGet(tVal, tStr)
 			if !tFound {
-				tErr = fmt.Errorf("member lookup failed: '%v'", strings.GetString(t1))
+				if t1 >= hp {
+					goto INVALID_HEAP_ACCESS
+				}
+				tStr = heap[t1].(string)
+				tErr = fmt.Errorf("member lookup failed: '%v'", tStr)
 				goto RETURN_ERR
 			}
-			t3 = strings.GetID(tStr)
+			if hp == heapSize-1 {
+				goto HEAP_OVERFLOW
+			}
+			t3 = hp
+			heap[hp] = tStr
+			hp++
 			opstack[sp] = t3
 			sp++
 
@@ -943,16 +1049,24 @@ func (in *Interpreter) run(fn *il.Function, bag attribute.Bag, step bool) (Resul
 			t1 = opstack[sp-1]
 			t2 = opstack[sp-2]
 			sp = sp - 2
-			tStr = strings.GetString(t1)
+			if t1 >= hp {
+				goto INVALID_HEAP_ACCESS
+			}
+			tStr = heap[t1].(string)
 			if t2 >= hp {
 				goto INVALID_HEAP_ACCESS
 			}
 			tVal = heap[t2]
-			tStr, tFound = tVal.(map[string]string)[tStr]
+			tStr, tFound = il.MapGet(tVal, tStr)
 			if !tFound {
 				tStr = ""
 			}
-			t3 = strings.GetID(tStr)
+			if hp == heapSize-1 {
+				goto HEAP_OVERFLOW
+			}
+			t3 = hp
+			heap[hp] = tStr
+			hp++
 			opstack[sp] = t3
 			sp++
 
@@ -969,12 +1083,17 @@ func (in *Interpreter) run(fn *il.Function, bag attribute.Bag, step bool) (Resul
 				goto INVALID_HEAP_ACCESS
 			}
 			tVal = heap[t2]
-			tStr, tFound = tVal.(map[string]string)[tStr]
+			tStr, tFound = il.MapGet(tVal, tStr)
 			if !tFound {
 				tErr = fmt.Errorf("member lookup failed: '%v'", strings.GetString(t1))
 				goto RETURN_ERR
 			}
-			t3 = strings.GetID(tStr)
+			if hp == heapSize-1 {
+				goto HEAP_OVERFLOW
+			}
+			t3 = hp
+			heap[hp] = tStr
+			hp++
 			opstack[sp] = t3
 			sp++
 
@@ -991,11 +1110,16 @@ func (in *Interpreter) run(fn *il.Function, bag attribute.Bag, step bool) (Resul
 				goto INVALID_HEAP_ACCESS
 			}
 			tVal = heap[t2]
-			tStr, tFound = tVal.(map[string]string)[tStr]
+			tStr, tFound = il.MapGet(tVal, tStr)
 			if !tFound {
 				tStr = ""
 			}
-			t3 = strings.GetID(tStr)
+			if hp == heapSize-1 {
+				goto HEAP_OVERFLOW
+			}
+			t3 = hp
+			heap[hp] = tStr
+			hp++
 			opstack[sp] = t3
 			sp++
 

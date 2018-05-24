@@ -4,18 +4,19 @@ kind: Deployment
 metadata:
   name: zipkin
   namespace: {ISTIO_NAMESPACE}
-  annotations:
-    sidecar.istio.io/inject: "false"
 spec:
   replicas: 1
   template:
     metadata:
       labels:
         app: zipkin
+      annotations:
+        sidecar.istio.io/inject: "false"
     spec:
       containers:
       - name: zipkin
-        image: docker.io/openzipkin/zipkin:latest
+        image: docker.io/openzipkin/zipkin:2.7
+        imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 9411
         env:

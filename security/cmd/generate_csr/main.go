@@ -20,10 +20,10 @@ import (
 	"flag"
 	"fmt"
 	"io/ioutil"
+	"os"
 
-	"github.com/golang/glog"
-
-	"istio.io/istio/security/pkg/pki/ca"
+	"istio.io/istio/pkg/log"
+	"istio.io/istio/security/pkg/pki/util"
 )
 
 var (
@@ -34,29 +34,34 @@ var (
 	keySize = flag.Int("key-size", 2048, "Size of the generated private key")
 )
 
+func fatalf(template string, args ...interface{}) {
+	log.Errorf(template, args)
+	os.Exit(-1)
+}
+
 func saveCreds(csrPem []byte, privPem []byte) {
 	err := ioutil.WriteFile(*outCsr, csrPem, 0644)
 	if err != nil {
-		glog.Fatalf("Could not write output certificate request: %s.", err)
+		fatalf("Could not write output certificate request: %s.", err)
 	}
 
 	err = ioutil.WriteFile(*outPriv, privPem, 0600)
 	if err != nil {
-		glog.Fatalf("Could not write output private key: %s.", err)
+		fatalf("Could not write output private key: %s.", err)
 	}
 }
 
 func main() {
 	flag.Parse()
 
-	csrPem, privPem, err := ca.GenCSR(ca.CertOptions{
+	csrPem, privPem, err := util.GenCSR(util.CertOptions{
 		Host:       *host,
 		Org:        *org,
 		RSAKeySize: *keySize,
 	})
 
 	if err != nil {
-		glog.Fatalf("Failed to generate CSR: %s.", err)
+		fatalf("Failed to generate CSR: %s.", err)
 	}
 
 	saveCreds(csrPem, privPem)

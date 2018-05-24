@@ -1,38 +1,53 @@
 #!/bin/bash
 set -ex
 
-WORKSPACE="$(bazel info workspace)"
-source "${WORKSPACE}/bin/use_bazel_go.sh"
+SCRIPTPATH=$( cd "$(dirname "$0")" ; pwd -P )
+
+WORKSPACE=$SCRIPTPATH/..
 
 cd ${WORKSPACE}
 
-bazel ${BAZEL_STARTUP_ARGS} build ${BAZEL_RUN_ARGS} \
-  //... $(bazel query 'tests(//...)') @com_github_bazelbuild_buildtools//buildifier
-
-buildifier="$(bazel info bazel-bin)/external/com_github_bazelbuild_buildtools/buildifier/buildifier"
-
-NUM_CPU=$(getconf _NPROCESSORS_ONLN)
+GOOS=
+GOARCH=
 
 if [[ -z $SKIP_INIT ]];then
   bin/init.sh
 fi
 
-echo 'Running linters .... in advisory mode'
-docker run\
-  -v $(bazel info output_base):$(bazel info output_base)\
-  -v $(pwd):/go/src/istio.io/istio\
-  -w /go/src/istio.io/istio\
-  gcr.io/istio-testing/linter:bfcc1d6942136fd86eb6f1a6fb328de8398fbd80\
-  --config=./lintconfig.json \
-  ./... || true
-echo 'linters OK'
+echo 'Checking Pilot types generation ....'
+bin/check_pilot_codegen.sh
+echo 'Pilot types generation OK'
 
-echo 'Checking licences'
-bin/check_license.sh || true
-echo 'licences OK'
+echo 'Running format/imports check ....'
+bin/fmt.sh -c
+echo 'Format/imports check OK'
 
-echo 'Running buildifier ...'
-${buildifier} -showlog -mode=check $(git ls-files \
-  | grep -e 'BUILD' -e 'WORKSPACE' -e '.*\.bazel' -e '.*\.bzl' \
-  | grep -v vendor) || true
-echo 'buildifer OK'
+echo 'Checking licenses'
+bin/check_license.sh
+echo 'licenses OK'
+
+echo 'Installing gometalinter ....'
+go get -u gopkg.in/alecthomas/gometalinter.v2
+gometalinter=$(which gometalinter.v2 2> /dev/null || echo "${ISTIO_BIN}/gometalinter.v2")
+$gometalinter --install
+echo 'Gometalinter installed successfully ....'
+
+echo 'Running gometalinter ....'
+$gometalinter --config=./lintconfig_base.json ./...
+echo 'gometalinter OK'
+
+echo 'Running gometalinter on adapters ....'
+pushd mixer/tools/adapterlinter
+go install .
+popd
+
+$gometalinter --config=./mixer/tools/adapterlinter/gometalinter.json ./mixer/adapter/...
+echo 'gometalinter on adapters OK'
+
+echo 'Running helm lint on istio & istio-remote ....'
+helm lint ./install/kubernetes/helm/{istio,istio-remote}
+echo 'helm lint on istio & istio-remote OK'
+
+echo 'Checking Grafana dashboards'
+bin/check_dashboards.sh
+echo 'dashboards OK'

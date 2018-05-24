@@ -12,14 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//go:generate $GOPATH/src/istio.io/istio/bin/mixer_codegen.sh -f mixer/adapter/stackdriver/config/config.proto -i mixer/adapter/stackdriver/config
+
+// Package stackdriver provides an adapter that implements the logEntry and metrics
+// templates to serialize generated values to Stackdriver.
 package stackdriver
 
 import (
 	"context"
 
+	md "cloud.google.com/go/compute/metadata"
 	multierror "github.com/hashicorp/go-multierror"
 
 	"istio.io/istio/mixer/adapter/stackdriver/config"
+	"istio.io/istio/mixer/adapter/stackdriver/helper"
 	"istio.io/istio/mixer/adapter/stackdriver/log"
 	sdmetric "istio.io/istio/mixer/adapter/stackdriver/metric"
 	"istio.io/istio/mixer/pkg/adapter"
@@ -49,6 +55,14 @@ var (
 
 // GetInfo returns the Info associated with this adapter implementation.
 func GetInfo() adapter.Info {
+	clusterNameFn := func() (string, error) {
+		cn, err := md.InstanceAttributeValue("cluster-name")
+		if err != nil {
+			return "", err
+		}
+		return cn, nil
+	}
+	mg := helper.NewMetadataGenerator(md.OnGCE, md.ProjectID, md.Zone, clusterNameFn)
 	return adapter.Info{
 		Name:        "stackdriver",
 		Impl:        "istio.io/istio/mixer/adapte/stackdriver",
@@ -58,8 +72,9 @@ func GetInfo() adapter.Info {
 			logentry.TemplateName,
 		},
 		DefaultConfig: &config.Params{},
-		NewBuilder:    func() adapter.HandlerBuilder { return &builder{m: sdmetric.NewBuilder(), l: log.NewBuilder()} },
-	}
+		NewBuilder: func() adapter.HandlerBuilder {
+			return &builder{m: sdmetric.NewBuilder(mg), l: log.NewBuilder(mg)}
+		}}
 }
 
 func (b *builder) SetMetricTypes(metrics map[string]*metric.Type) {

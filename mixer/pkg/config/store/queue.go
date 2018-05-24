@@ -15,28 +15,27 @@
 package store
 
 import (
-	"context"
-
 	"github.com/gogo/protobuf/proto"
-	"github.com/golang/glog"
+
+	"istio.io/istio/pkg/log"
 )
 
 // The size of the buffer for the outbound channel for the queue.
 const choutBufSize = 10
 
 type eventQueue struct {
-	ctx   context.Context
-	chout chan Event
-	chin  <-chan BackendEvent
-	kinds map[string]proto.Message
+	closec chan struct{}
+	chout  chan Event
+	chin   <-chan BackendEvent
+	kinds  map[string]proto.Message
 }
 
-func newQueue(ctx context.Context, chin <-chan BackendEvent, kinds map[string]proto.Message) *eventQueue {
+func newQueue(chin <-chan BackendEvent, kinds map[string]proto.Message) *eventQueue {
 	eq := &eventQueue{
-		ctx:   ctx,
-		chout: make(chan Event, choutBufSize),
-		chin:  chin,
-		kinds: kinds,
+		closec: make(chan struct{}),
+		chout:  make(chan Event, choutBufSize),
+		chin:   chin,
+		kinds:  kinds,
 	}
 	go eq.run()
 	return eq
@@ -63,23 +62,23 @@ func (q *eventQueue) run() {
 loop:
 	for {
 		select {
-		case <-q.ctx.Done():
+		case <-q.closec:
 			break loop
 		case ev := <-q.chin:
 			converted, err := q.convertValue(ev)
 			if err != nil {
-				glog.Errorf("Failed to convert %s an event: %v", ev.Key, err)
+				log.Errorf("Failed to convert %s an event: %v", ev.Key, err)
 				break
 			}
 			evs := []Event{converted}
 			for len(evs) > 0 {
 				select {
-				case <-q.ctx.Done():
+				case <-q.closec:
 					break loop
 				case ev := <-q.chin:
 					converted, err = q.convertValue(ev)
 					if err != nil {
-						glog.Errorf("Failed to convert %s an event: %v", ev.Key, err)
+						log.Errorf("Failed to convert %s an event: %v", ev.Key, err)
 						break
 					}
 					evs = append(evs, converted)

@@ -16,11 +16,11 @@ package metric
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"sync"
 	"time"
 
-	monitoring "cloud.google.com/go/monitoring/apiv3"
 	monitoringpb "google.golang.org/genproto/googleapis/monitoring/v3"
 
 	"istio.io/istio/mixer/pkg/adapter"
@@ -66,7 +66,7 @@ func (b *buffered) Send() {
 	b.m.Lock()
 	if len(b.buffer) == 0 {
 		b.m.Unlock()
-		b.l.Infof("No data to send to Stackdriver.")
+		b.l.Debugf("No data to send to Stackdriver.")
 		return
 	}
 	toSend := b.buffer
@@ -76,7 +76,7 @@ func (b *buffered) Send() {
 	merged := merge(toSend, b.l)
 	err := b.pushMetrics(context.Background(),
 		&monitoringpb.CreateTimeSeriesRequest{
-			Name:       monitoring.MetricProjectPath(b.project),
+			Name:       fmt.Sprintf("projects/%s", b.project),
 			TimeSeries: merged,
 		})
 
@@ -86,7 +86,7 @@ func (b *buffered) Send() {
 	if err != nil {
 		_ = b.l.Errorf("Stackdriver returned: %v\nGiven data: %v", err, merged)
 	} else {
-		b.l.Infof("Successfully sent data to Stackdriver.")
+		b.l.Debugf("Successfully sent data to Stackdriver.")
 	}
 }
 

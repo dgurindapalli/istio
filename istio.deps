@@ -1,30 +1,9 @@
 [
 	{
-		"name": "CA_TAG",
-		"repoName": "auth",
-		"prodBranch": "stable",
-		"file": "istio.VERSION",
-		"lastStableSHA": "d10e0c4aa05ca726cae71aa5d033dea4f7bc26e4"
-	},
-	{
-		"name": "MIXER_TAG",
-		"repoName": "mixer",
-		"prodBranch": "stable",
-		"file": "istio.VERSION",
-		"lastStableSHA": "5253b6b574a98b209c0ef3d0d6e90c1b8d6a5c2a"
-	},
-	{
-		"name": "PILOT_TAG",
-		"repoName": "pilot",
-		"prodBranch": "stable",
-		"file": "istio.VERSION",
-		"lastStableSHA": "3101ea9d82a5f83b699c2d3245b371a19fa6bef4"
-	},
-	{
-		"name": "PROXY_TAG",
+		"_comment": "This file is auto updated by a robot executing `https://github.com/istio/test-infra/blob/master/prow/test-infra-update-deps.sh`.",
+		"name": "PROXY_REPO_SHA",
 		"repoName": "proxy",
-		"prodBranch": "master",
-		"file": "istio.VERSION",
-		"lastStableSHA": "2458e4e27bc588df858711b66de0970183e0cf66"
+		"file": "",
+		"lastStableSHA": "d58256802ca70d90c363d7ccac31f900a51c882b"
 	}
 ]

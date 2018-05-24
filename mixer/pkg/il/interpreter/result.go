@@ -17,11 +17,11 @@ package interpreter
 import (
 	"fmt"
 	"math"
+	"net"
 	"time"
 
-	"github.com/golang/glog"
-
 	"istio.io/istio/mixer/pkg/il"
+	"istio.io/istio/pkg/log"
 )
 
 // Result contains the result of an evaluation performed by the interpreter.
@@ -54,7 +54,7 @@ func (r Result) AsBool() bool {
 // panic if the underlying value is not string and returns the string version of the data.
 func (r Result) AsString() string {
 	if r.t != il.String {
-		glog.Infof("result.AsString converting to string from type: '%v'", r.t)
+		log.Infof("result.AsString converting to string from type: '%v'", r.t)
 		return fmt.Sprintf("%v", r.AsInterface())
 	}
 
@@ -109,9 +109,17 @@ func (r Result) AsInterface() interface{} {
 	case il.Void:
 		return nil
 	case il.Interface:
+		// TODO: currently byte[] can only be net.IP address type, so we can
+		// safely do this. Ideally we want to have a better fix.
+		if r.vi != nil {
+			switch r.vi.(type) {
+			case []byte:
+				return net.IP(r.vi.([]uint8))
+			}
+		}
 		return r.vi
 	default:
-		glog.Warningf("interpreter.Result: Unknown type encountered. Returning nil. type: '%v'", r.t)
+		log.Warnf("interpreter.Result: Unknown type encountered. Returning nil. type: '%v'", r.t)
 		return nil
 	}
 }

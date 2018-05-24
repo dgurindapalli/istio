@@ -15,107 +15,122 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io/ioutil"
 	"os"
 	"strings"
+	"text/template"
 	"time"
 
-	"github.com/golang/glog"
 	"github.com/golang/protobuf/ptypes"
 	"github.com/golang/protobuf/ptypes/duration"
 	"github.com/spf13/cobra"
+	"github.com/spf13/cobra/doc"
 
-	proxyconfig "istio.io/api/proxy/v1/config"
-	"istio.io/istio/pilot/cmd"
-	"istio.io/istio/pilot/model"
-	"istio.io/istio/pilot/platform"
-	"istio.io/istio/pilot/proxy"
-	"istio.io/istio/pilot/proxy/envoy"
-	"istio.io/istio/pilot/tools/version"
+	meshconfig "istio.io/api/mesh/v1alpha1"
+	"istio.io/istio/pilot/pkg/model"
+	"istio.io/istio/pilot/pkg/proxy"
+	envoy "istio.io/istio/pilot/pkg/proxy/envoy/v1"
+	"istio.io/istio/pilot/pkg/serviceregistry"
+	"istio.io/istio/pkg/cmd"
+	"istio.io/istio/pkg/collateral"
+	"istio.io/istio/pkg/log"
+	"istio.io/istio/pkg/version"
 )
 
 var (
-	role            proxy.Node
-	serviceregistry platform.ServiceRegistry
+	role     model.Proxy
+	registry serviceregistry.ServiceRegistry
 
 	// proxy config flags (named identically)
-	configPath             string
-	binaryPath             string
-	serviceCluster         string
-	availabilityZone       string
-	drainDuration          time.Duration
-	parentShutdownDuration time.Duration
-	discoveryAddress       string
-	discoveryRefreshDelay  time.Duration
-	zipkinAddress          string
-	connectTimeout         time.Duration
-	statsdUDPAddress       string
-	proxyAdminPort         int
-	controlPlaneAuthPolicy string
-	customConfigFile       string
+	configPath               string
+	binaryPath               string
+	serviceCluster           string
+	availabilityZone         string
+	drainDuration            time.Duration
+	parentShutdownDuration   time.Duration
+	discoveryAddress         string
+	discoveryRefreshDelay    time.Duration
+	zipkinAddress            string
+	connectTimeout           time.Duration
+	statsdUDPAddress         string
+	proxyAdminPort           int
+	controlPlaneAuthPolicy   string
+	customConfigFile         string
+	proxyLogLevel            string
+	concurrency              int
+	bootstrapv2              bool
+	templateFile             string
+	disableInternalTelemetry bool
+
+	loggingOptions = log.DefaultOptions()
 
 	rootCmd = &cobra.Command{
-		Use:   "agent",
+		Use:   "pilot-agent",
 		Short: "Istio Pilot agent",
-		Long:  "Istio Pilot provides management plane functionality to the Istio service mesh and Istio Mixer.",
+		Long:  "Istio Pilot agent runs in the side car or gateway container and bootstraps envoy.",
 	}
 
 	proxyCmd = &cobra.Command{
 		Use:   "proxy",
 		Short: "Envoy proxy agent",
 		RunE: func(c *cobra.Command, args []string) error {
-			glog.V(2).Infof("Version %s", version.Line())
-			role.Type = proxy.Sidecar
+			if err := log.Configure(loggingOptions); err != nil {
+				return err
+			}
+			log.Infof("Version %s", version.Info.String())
+			role.Type = model.Sidecar
 			if len(args) > 0 {
-				role.Type = proxy.NodeType(args[0])
+				role.Type = model.NodeType(args[0])
 			}
 
 			// set values from registry platform
-			if role.IPAddress == "" {
-				if serviceregistry == platform.KubernetesRegistry {
+			if len(role.IPAddress) == 0 {
+				if registry == serviceregistry.KubernetesRegistry {
 					role.IPAddress = os.Getenv("INSTANCE_IP")
 				} else {
 					ipAddr := "127.0.0.1"
 					if ok := proxy.WaitForPrivateNetwork(); ok {
 						ipAddr = proxy.GetPrivateIP().String()
-						glog.V(2).Infof("Obtained private IP %v", ipAddr)
+						log.Infof("Obtained private IP %v", ipAddr)
 					}
 
 					role.IPAddress = ipAddr
 				}
 			}
-			if role.ID == "" {
-				if serviceregistry == platform.KubernetesRegistry {
+			if len(role.ID) == 0 {
+				if registry == serviceregistry.KubernetesRegistry {
 					role.ID = os.Getenv("POD_NAME") + "." + os.Getenv("POD_NAMESPACE")
-				} else if serviceregistry == platform.ConsulRegistry {
+				} else if registry == serviceregistry.ConsulRegistry {
 					role.ID = role.IPAddress + ".service.consul"
 				} else {
 					role.ID = role.IPAddress
 				}
 			}
 			pilotDomain := role.Domain
-			if role.Domain == "" {
-				if serviceregistry == platform.KubernetesRegistry {
+			if len(role.Domain) == 0 {
+				if registry == serviceregistry.KubernetesRegistry {
 					role.Domain = os.Getenv("POD_NAMESPACE") + ".svc.cluster.local"
 					pilotDomain = "cluster.local"
-				} else if serviceregistry == platform.ConsulRegistry {
+				} else if registry == serviceregistry.ConsulRegistry {
 					role.Domain = "service.consul"
 				} else {
 					role.Domain = ""
 				}
 			}
 
-			glog.V(2).Infof("Proxy role: %#v", role)
+			log.Infof("Proxy role: %#v", role)
 
-			proxyConfig := proxyconfig.ProxyConfig{}
+			proxyConfig := meshconfig.ProxyConfig{}
 
 			// set all flags
+			proxyConfig.AvailabilityZone = availabilityZone
 			proxyConfig.CustomConfigFile = customConfigFile
 			proxyConfig.ConfigPath = configPath
 			proxyConfig.BinaryPath = binaryPath
 			proxyConfig.ServiceCluster = serviceCluster
-			proxyConfig.AvailabilityZone = availabilityZone
 			proxyConfig.DrainDuration = ptypes.DurationProto(drainDuration)
 			proxyConfig.ParentShutdownDuration = ptypes.DurationProto(parentShutdownDuration)
 			proxyConfig.DiscoveryAddress = discoveryAddress
@@ -124,25 +139,26 @@ var (
 			proxyConfig.ConnectTimeout = ptypes.DurationProto(connectTimeout)
 			proxyConfig.StatsdUdpAddress = statsdUDPAddress
 			proxyConfig.ProxyAdminPort = int32(proxyAdminPort)
+			proxyConfig.Concurrency = int32(concurrency)
 
 			var pilotSAN []string
 			switch controlPlaneAuthPolicy {
-			case proxyconfig.AuthenticationPolicy_NONE.String():
-				proxyConfig.ControlPlaneAuthPolicy = proxyconfig.AuthenticationPolicy_NONE
-			case proxyconfig.AuthenticationPolicy_MUTUAL_TLS.String():
+			case meshconfig.AuthenticationPolicy_NONE.String():
+				proxyConfig.ControlPlaneAuthPolicy = meshconfig.AuthenticationPolicy_NONE
+			case meshconfig.AuthenticationPolicy_MUTUAL_TLS.String():
 				var ns string
-				proxyConfig.ControlPlaneAuthPolicy = proxyconfig.AuthenticationPolicy_MUTUAL_TLS
-				if serviceregistry == platform.KubernetesRegistry {
+				proxyConfig.ControlPlaneAuthPolicy = meshconfig.AuthenticationPolicy_MUTUAL_TLS
+				if registry == serviceregistry.KubernetesRegistry {
 					partDiscoveryAddress := strings.Split(discoveryAddress, ":")
 					discoveryHostname := partDiscoveryAddress[0]
 					parts := strings.Split(discoveryHostname, ".")
 					if len(parts) == 1 {
 						// namespace of pilot is not part of discovery address use
-						// pod namespace e.g. istio-pilot:15003
+						// pod namespace e.g. istio-pilot:15005
 						ns = os.Getenv("POD_NAMESPACE")
 					} else {
 						// namespace is found in the discovery address
-						// e.g. istio-pilot.istio-system:15003
+						// e.g. istio-pilot.istio-system:15005
 						ns = parts[1]
 					}
 				}
@@ -152,11 +168,11 @@ var (
 			// resolve statsd address
 			if proxyConfig.StatsdUdpAddress != "" {
 				addr, err := proxy.ResolveAddr(proxyConfig.StatsdUdpAddress)
-				if err != nil {
-					return err
+				if err == nil {
+					proxyConfig.StatsdUdpAddress = addr
 				}
-
-				proxyConfig.StatsdUdpAddress = addr
+				// If istio-mixer.istio-system can't be resolved, skip generating the statsd config.
+				// (instead of crashing). Mixer is optional.
 			}
 
 			if err := model.ValidateProxyConfig(&proxyConfig); err != nil {
@@ -164,28 +180,63 @@ var (
 			}
 
 			if out, err := model.ToYAML(&proxyConfig); err != nil {
-				glog.V(2).Infof("Failed to serialize to YAML: %v", err)
+				log.Infof("Failed to serialize to YAML: %v", err)
 			} else {
-				glog.V(2).Infof("Effective config: %s", out)
+				log.Infof("Effective config: %s", out)
 			}
 
 			certs := []envoy.CertSource{
 				{
-					Directory: proxy.AuthCertsPath,
-					Files:     []string{proxy.CertChainFilename, proxy.KeyFilename, proxy.RootCertFilename},
+					Directory: model.AuthCertsPath,
+					Files:     []string{model.CertChainFilename, model.KeyFilename, model.RootCertFilename},
 				},
 			}
 
-			if role.Type == proxy.Ingress {
+			if role.Type == model.Ingress {
 				certs = append(certs, envoy.CertSource{
-					Directory: proxy.IngressCertsPath,
-					Files:     []string{proxy.IngressCertFilename, proxy.IngressKeyFilename},
+					Directory: model.IngressCertsPath,
+					Files:     []string{model.IngressCertFilename, model.IngressKeyFilename},
 				})
 			}
 
-			glog.V(2).Infof("Monitored certs: %#v", certs)
+			log.Infof("Monitored certs: %#v", certs)
 
-			envoyProxy := envoy.NewProxy(proxyConfig, role.ServiceNode())
+			if templateFile != "" && proxyConfig.CustomConfigFile == "" {
+				opts := make(map[string]string)
+				opts["PodName"] = os.Getenv("POD_NAME")
+				opts["PodNamespace"] = os.Getenv("POD_NAMESPACE")
+				if proxyConfig.ControlPlaneAuthPolicy == meshconfig.AuthenticationPolicy_MUTUAL_TLS {
+					opts["ControlPlaneAuth"] = "enable"
+				}
+				if disableInternalTelemetry {
+					opts["DisableReportCalls"] = "true"
+				}
+				tmpl, err := template.ParseFiles(templateFile)
+				if err != nil {
+					return err
+				}
+				var buffer bytes.Buffer
+				err = tmpl.Execute(&buffer, opts)
+				if err != nil {
+					return err
+				}
+				content := buffer.Bytes()
+				log.Infof("Static config:\n%s", string(content))
+				proxyConfig.CustomConfigFile = proxyConfig.ConfigPath + "/envoy.yaml"
+				err = ioutil.WriteFile(proxyConfig.CustomConfigFile, content, 0644)
+				if err != nil {
+					return err
+				}
+			}
+
+			var envoyProxy proxy.Proxy
+			if bootstrapv2 {
+				// Using a different constructor - the code will likely be refactored / split from the v1,
+				// but may expose same interface to minimize risks
+				envoyProxy = envoy.NewV2Proxy(proxyConfig, role.ServiceNode(), proxyLogLevel, pilotSAN)
+			} else {
+				envoyProxy = envoy.NewProxy(proxyConfig, role.ServiceNode(), proxyLogLevel)
+			}
 			agent := proxy.NewAgent(envoyProxy, proxy.DefaultRetry)
 			watcher := envoy.NewWatcher(proxyConfig, agent, role, certs, pilotSAN)
 			ctx, cancel := context.WithCancel(context.Background())
@@ -203,17 +254,17 @@ var (
 func timeDuration(dur *duration.Duration) time.Duration {
 	out, err := ptypes.Duration(dur)
 	if err != nil {
-		glog.Warning(err)
+		log.Warna(err)
 	}
 	return out
 }
 
 func init() {
-	proxyCmd.PersistentFlags().StringVar((*string)(&serviceregistry), "serviceregistry",
-		string(platform.KubernetesRegistry),
-		fmt.Sprintf("Select the platform for service registry, options are {%s, %s, %s}",
-			string(platform.KubernetesRegistry), string(platform.ConsulRegistry),
-			string(platform.EurekaRegistry)))
+	proxyCmd.PersistentFlags().StringVar((*string)(&registry), "serviceregistry",
+		string(serviceregistry.KubernetesRegistry),
+		fmt.Sprintf("Select the platform for service registry, options are {%s, %s, %s, %s, %s}",
+			serviceregistry.KubernetesRegistry, serviceregistry.ConsulRegistry, serviceregistry.EurekaRegistry,
+			serviceregistry.CloudFoundryRegistry, serviceregistry.MockRegistry))
 	proxyCmd.PersistentFlags().StringVar(&role.IPAddress, "ip", "",
 		"Proxy IP address. If not provided uses ${INSTANCE_IP} environment variable.")
 	proxyCmd.PersistentFlags().StringVar(&role.ID, "id", "",
@@ -222,7 +273,7 @@ func init() {
 		"DNS domain suffix. If not provided uses ${POD_NAMESPACE}.svc.cluster.local")
 
 	// Flags for proxy configuration
-	values := proxy.DefaultProxyConfig()
+	values := model.DefaultProxyConfig()
 	proxyCmd.PersistentFlags().StringVar(&configPath, "configPath", values.ConfigPath,
 		"Path to the generated configuration file directory")
 	proxyCmd.PersistentFlags().StringVar(&binaryPath, "binaryPath", values.BinaryPath,
@@ -254,17 +305,38 @@ func init() {
 	proxyCmd.PersistentFlags().StringVar(&controlPlaneAuthPolicy, "controlPlaneAuthPolicy",
 		values.ControlPlaneAuthPolicy.String(), "Control Plane Authentication Policy")
 	proxyCmd.PersistentFlags().StringVar(&customConfigFile, "customConfigFile", values.CustomConfigFile,
-		"Path to the generated configuration file directory")
+		"Path to the custom configuration file")
+	// Log levels are provided by the library https://github.com/gabime/spdlog, used by Envoy.
+	proxyCmd.PersistentFlags().StringVar(&proxyLogLevel, "proxyLogLevel", "warn",
+		fmt.Sprintf("The log level used to start the Envoy proxy (choose from {%s, %s, %s, %s, %s, %s, %s})",
+			"trace", "debug", "info", "warn", "err", "critical", "off"))
+	proxyCmd.PersistentFlags().IntVar(&concurrency, "concurrency", int(values.Concurrency),
+		"number of worker threads to run")
+	proxyCmd.PersistentFlags().BoolVar(&bootstrapv2, "bootstrapv2", true,
+		"Use bootstrap v2")
+	proxyCmd.PersistentFlags().StringVar(&templateFile, "templateFile", "",
+		"Go template bootstrap config")
+	proxyCmd.PersistentFlags().BoolVar(&disableInternalTelemetry, "disableInternalTelemetry", false,
+		"Disable internal telemetry")
+
+	// Attach the Istio logging options to the command.
+	loggingOptions.AttachCobraFlags(rootCmd)
 
 	cmd.AddFlags(rootCmd)
 
 	rootCmd.AddCommand(proxyCmd)
-	rootCmd.AddCommand(cmd.VersionCmd)
+	rootCmd.AddCommand(version.CobraCommand())
+
+	rootCmd.AddCommand(collateral.CobraCommand(rootCmd, &doc.GenManHeader{
+		Title:   "Istio Pilot Agent",
+		Section: "pilot-agent CLI",
+		Manual:  "Istio Pilot Agent",
+	}))
 }
 
 func main() {
 	if err := rootCmd.Execute(); err != nil {
-		glog.Error(err)
+		log.Errora(err)
 		os.Exit(-1)
 	}
 }
